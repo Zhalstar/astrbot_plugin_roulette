@@ -1,10 +1,14 @@
+from astrbot.api import logger
 from astrbot.core.message.components import At
 from astrbot.core.platform.astr_message_event import AstrMessageEvent
 from astrbot.core.platform.sources.aiocqhttp.aiocqhttp_message_event import (
     AiocqhttpMessageEvent,
 )
 
-async def get_name(event: AstrMessageEvent, user_id: str|int, group_id: str|int = None) -> str:
+
+async def get_name(
+    event: AstrMessageEvent, user_id: str | int, group_id: str | int = ""
+) -> str:
     """
     获取指定群友的昵称
     :param event: 消息事件
@@ -28,8 +32,8 @@ async def get_name(event: AstrMessageEvent, user_id: str|int, group_id: str|int 
         except Exception as e:
             # 如果是群成员不存在 (retcode 1200)，在要求严格检查群成员时返回 None
             if "1200" in str(e) or "不存在" in str(e):
-                return None
-            
+                return ""
+
             # 其他异常尝试获取陌生人信息
             try:
                 stranger_info = await event.bot.get_stranger_info(user_id=int(user_id))
@@ -38,6 +42,7 @@ async def get_name(event: AstrMessageEvent, user_id: str|int, group_id: str|int 
                 return str(user_id)
     else:
         return str(user_id)
+
 
 def get_at_id(event: AstrMessageEvent) -> str:
     """获取@的 QQ 号"""
@@ -51,7 +56,7 @@ def get_at_id(event: AstrMessageEvent) -> str:
     )
 
 
-async def ban(event: AstrMessageEvent, duration: int, user_id: str|int = None):
+async def ban(event: AstrMessageEvent, duration: int, user_id: str | int = ""):
     """
     禁言用户
     :param event: 消息事件
@@ -60,16 +65,12 @@ async def ban(event: AstrMessageEvent, duration: int, user_id: str|int = None):
     """
     if event.get_platform_name() == "aiocqhttp":
         assert isinstance(event, AiocqhttpMessageEvent)
+        target_user_id = user_id if user_id is not None else event.get_sender_id()
         try:
-            # 如果未指定 user_id，默认禁言消息发送者
-            target_user_id = user_id if user_id is not None else event.get_sender_id()
-            
             await event.bot.set_group_ban(
                 group_id=int(event.get_group_id()),
                 user_id=int(target_user_id),
                 duration=duration,
             )
         except Exception as e:
-            # 禁言失败时记录错误但不中断流程
-            from astrbot import logger
             logger.error(f"禁言用户 {target_user_id} 失败: {e}")

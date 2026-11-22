@@ -1,122 +1,116 @@
+from __future__ import annotations
+
 import random
-import threading
-from typing import List, Optional
+from dataclasses import dataclass
+from enum import Enum, auto
 
 
 class Room:
-    """内部房间类，不对外暴露 room_id"""
+    """Represent an active roulette room."""
 
-    def __init__(self, players: list[str], ban_time:int):
+    def __init__(self, players: list[str], ban_time: int):
         self.players = players
         self.ban_time = ban_time
         self.bullet = random.randint(1, 6)
         self.round = 0
-        # 双人模式：随机先手
-        self.next_idx: Optional[int] = random.randint(0, 1) if players else None
-        self.participated: set = set()  # 记录多人模式下已参与的玩家
+        self.next_idx: int | None = random.randint(0, 1) if players else None
+        self.participated: set[str] = set()
 
     @property
     def over(self) -> bool:
+        """Return whether the bullet round has been reached."""
         return self.round >= self.bullet
 
-    def can_shoot(self, shooter: str):
+    def can_shoot(self, shooter: str) -> bool:
+        """Return whether a player may shoot in the current round."""
         if self.players and isinstance(self.next_idx, int):
             return shooter == self.players[self.next_idx]
-        # 多人模式：检查是否已经参与过
         if not self.players:
             return shooter not in self.participated
         return True
 
     def shoot(self, shooter: str) -> bool:
+        """Advance the room by one valid shot."""
         if self.over:
             return False
 
-        # 多人模式
         if not self.players:
-            # 检查是否已参与
             if shooter in self.participated:
                 return False
             self.participated.add(shooter)
             self.round += 1
             return self.round == self.bullet
 
-        # 双人模式：固定玩家列表
-        if shooter not in self.players:
+        if shooter not in self.players or not self.can_shoot(shooter):
             return False
-
-        # 判断本轮枪手
-        if not self.can_shoot(shooter):
+        if self.next_idx is None:
             return False
 
         self.round += 1
-        # 切换枪手
         self.next_idx = 1 - self.next_idx
-
         return self.round == self.bullet
-    
-    def get_all_participants(self) -> List[str]:
-        """获取所有参与者（包括固定玩家和多人模式下的参与者）"""
+
+    def get_all_participants(self) -> list[str]:
+        """Return all players who participated in the game."""
         if self.players:
             return self.players
         return list(self.participated)
 
 
-class GameManager:
-    def __init__(self):
-        self._lock = threading.Lock()
-        self.room: dict[str, Room] = {}  # player_id -> room 实例
+class StartGameError(Enum):
+    """Describe why a game could not be created."""
 
-    def create_room(
-        self, kids: list[str], ban_time: int = 0
-    ) -> Room | None:
-        """创建房间"""
-        sender_id, target_id, group_id = kids[0], kids[1], kids[2]
-        with self._lock:
-            # 双人模式：检查双方是否在游戏中
-            if sender_id and target_id:
-                k1 = f"{group_id}:{sender_id}"
-                k2 = f"{group_id}:{target_id}"
-                if k1 in self.room or k2 in self.room:
-                    return None
-                room = Room(players=[sender_id, target_id], ban_time=ban_time)
-                self.room[k1] = room
-                self.room[k2] = room
-                return room
-            # 多人模式：只检查群是否已有多人游戏
-            elif group_id:
-                k_group = f"{group_id}:group"
-                if k_group in self.room:
-                    return None
-                room = Room(players=[], ban_time=ban_time)
-                self.room[k_group] = room
-                return room
+    SELF_TARGET = auto()
+    SENDER_BUSY = auto()
+    TARGET_BUSY = auto()
+    GROUP_BUSY = auto()
+    CREATE_FAILED = auto()
 
-    def get_room(self, kids: list[str]) -> Room | None:
-        """获取房间"""
-        sender_id, target_id, group_id = kids[0], kids[1], kids[2]
-        with self._lock:
-            if sender_id:
-                if room := self.room.get(f"{group_id}:{sender_id}"): return room
-            if target_id:
-                if room := self.room.get(f"{group_id}:{target_id}"): return room
-            if group_id:
-                if room := self.room.get(f"{group_id}:group"): return room
-            return None
 
-    def has_room(self, kid: str, group_id: str) -> bool:
-        """玩家是否已在房间"""
-        with self._lock:
-            return f"{group_id}:{kid}" in self.room
+@dataclass(slots=True)
+class StartGameResult:
+    """Contain the outcome of creating a roulette game."""
 
-    def del_room(self, group_id: str, players: list[str] = None):
-        """即销毁房间"""
-        with self._lock:
-            if players:
-                for p in players:
-                    k = f"{group_id}:{p}"
-                    if k in self.room:
-                        self.room.pop(k)
-            
-            k_group = f"{group_id}:group"
-            if k_group in self.room:
-                self.room.pop(k_group)
+    room: Room | None = None
+    error: StartGameError | None = None
+    custom_duration: bool = False
+    first_player_id: str | None = None
+
+
+class ShootError(Enum):
+    """Describe why a shot could not be performed."""
+
+    NO_GAME = auto()
+    ALREADY_PARTICIPATED = auto()
+    NOT_TURN = auto()
+
+
+@dataclass(slots=True)
+class ShootResult:
+    """Contain the outcome and next state after a shot."""
+
+    room: Room | None = None
+    error: ShootError | None = None
+    hit: bool = False
+    remaining_shots: int = 0
+    next_player_id: str | None = None
+    is_last_round: bool = False
+    quote: str = ""
+
+
+class GameActionError(Enum):
+    """Describe why a non-shooting game action failed."""
+
+    NO_GAME = auto()
+    NOT_TURN = auto()
+    LAST_ROUND_LOCKED = auto()
+    PVP_GAME = auto()
+
+
+@dataclass(slots=True)
+class GameActionResult:
+    """Contain the outcome of surrendering or ending a game."""
+
+    room: Room | None = None
+    error: GameActionError | None = None
+    quote: str = ""
